@@ -1,0 +1,89 @@
+name: Release QCOM tag bundle
+
+# One tag in -> source snapshots of all core sm8250 repos at that tag -> one GitHub Release.
+# Snapshots have no git history (use them to diff / copy code, not to git merge).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "CLO tag to release"
+        required: true
+        default: "LA.UM.9.12.r1-18500-SMxx50.QSSI14.0"
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      # name|url  (verified reachable by the research workflow)
+      REPOS: |
+        msm-4.19|https://git.codelinaro.org/clo/la/kernel/msm-4.19
+        audio-kernel|https://git.codelinaro.org/clo/la/platform/vendor/opensource/audio-kernel
+        camera-kernel|https://git.codelinaro.org/clo/la/platform/vendor/opensource/camera-kernel
+        video-driver|https://git.codelinaro.org/clo/la/platform/vendor/opensource/video-driver
+        display-drivers|https://git.codelinaro.org/clo/la/platform/vendor/opensource/display-drivers
+        data-kernel|https://git.codelinaro.org/clo/la/platform/vendor/qcom-opensource/data-kernel
+        qcacld-3.0|https://git.codelinaro.org/clo/la/platform/vendor/qcom-opensource/wlan/qcacld-3.0
+        qca-wifi-host-cmn|https://git.codelinaro.org/clo/la/platform/vendor/qcom-opensource/wlan/qca-wifi-host-cmn
+        fw-api|https://git.codelinaro.org/clo/la/platform/vendor/qcom-opensource/wlan/fw-api
+    steps:
+      - name: Snapshot repos and publish release
+        run: |
+          set -uo pipefail
+          case "$TAG" in ""|*[!A-Za-z0-9._+-]*) echo "Bad tag: $TAG"; exit 1;; esac
+          command -v zstd >/dev/null || sudo apt-get install -y zstd >/dev/null
+          export GIT_TERMINAL_PROMPT=0
+          mkdir -p out work
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          { echo "### Tag \`$TAG\`"; echo; echo "| repo | result | commit |"; echo "|---|---|---|"; } >> "$summary"
+          : > out/SOURCES.txt
+          ok=0; fail=0
+          while IFS='|' read -r name url; do
+            [ -z "$name" ] && continue
+            git ls-remote --exit-code --tags --refs "$url" "refs/tags/$TAG" >/dev/null 2>&1
+            rc=$?
+            if [ $rc -eq 2 ]; then
+              echo "::warning::$name has no tag $TAG - skipped"
+              echo "| $name | tag not found, skipped | |" >> "$summary"; continue
+            elif [ $rc -ne 0 ]; then
+              echo "::error::$name unreachable"
+              echo "| $name | ERROR unreachable | |" >> "$summary"; fail=$((fail+1)); continue
+            fi
+            if ! git clone --quiet --depth 1 --branch "$TAG" "$url" "work/$name"; then
+              echo "::error::$name clone failed"
+              echo "| $name | ERROR clone failed | |" >> "$summary"; fail=$((fail+1)); rm -rf "work/$name"; continue
+            fi
+            sha=$(git -C "work/$name" rev-parse HEAD)
+            rm -rf "work/$name/.git"
+            asset="$name-$TAG.tar.zst"
+            if ! tar -C work -I 'zstd -19 -T0' -cf "out/$asset" "$name"; then
+              echo "::error::$name pack failed"
+              echo "| $name | ERROR pack failed | $sha |" >> "$summary"; fail=$((fail+1)); rm -rf "work/$name" "out/$asset"; continue
+            fi
+            rm -rf "work/$name"
+            size=$(du -h "out/$asset" | cut -f1)
+            echo "$name | $url | $TAG | $sha | $asset ($size)" >> out/SOURCES.txt
+            echo "| $name | ok ($size) | \`${sha:0:12}\` |" >> "$summary"
+            ok=$((ok+1))
+          done <<< "$REPOS"
+
+          if [ "$ok" -eq 0 ]; then echo "Nothing to release"; exit 1; fi
+
+          {
+            echo "Source snapshots (no git history) of CodeLinaro tag \`$TAG\`."
+            echo
+            echo "Included repos: $ok. Exact commits are in SOURCES.txt."
+          } > notes.md
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" out/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file notes.md
+          fi
+          [ "$fail" -eq 0 ] || { echo "$fail repo(s) failed"; exit 1; }
