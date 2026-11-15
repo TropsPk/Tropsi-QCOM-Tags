@@ -55,14 +55,20 @@ jobs:
               echo "::error::$name unreachable"
               echo "| $name | ERROR unreachable | |" >> "$summary"; fail=$((fail+1)); continue
             fi
-            if ! git clone --quiet --depth 1 --branch "$TAG" "$url" "work/$name"; then
-              echo "::error::$name clone failed"
+            cloned=0
+            for attempt in 1 2 3; do
+              rm -rf "work/$name"
+              if git clone --quiet --depth 1 --branch "$TAG" "$url" "work/$name"; then cloned=1; break; fi
+              echo "clone attempt $attempt failed for $name"; sleep $((attempt * 15))
+            done
+            if [ "$cloned" -ne 1 ]; then
+              echo "::error::$name clone failed after 3 tries"
               echo "| $name | ERROR clone failed | |" >> "$summary"; fail=$((fail+1)); rm -rf "work/$name"; continue
             fi
             sha=$(git -C "work/$name" rev-parse HEAD)
             rm -rf "work/$name/.git"
             asset="$name-$TAG.tar.zst"
-            if ! tar -C work -I 'zstd -19 -T0' -cf "out/$asset" "$name"; then
+            if ! tar -C work -I 'zstd -19 -T0' -cf "out/$asset" "$name" || ! zstd -tq "out/$asset"; then
               echo "::error::$name pack failed"
               echo "| $name | ERROR pack failed | $sha |" >> "$summary"; fail=$((fail+1)); rm -rf "work/$name" "out/$asset"; continue
             fi
