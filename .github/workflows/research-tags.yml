@@ -1,0 +1,345 @@
+name: Research QCOM tags (read-only)
+
+# Research only: lists tags, checks our notes, finds smaller repos. Never publishes anything.
+
+on:
+  workflow_dispatch:
+    inputs:
+      main_line:
+        description: "Main line (tag text before the build number)"
+        required: true
+        default: "LA.UM.9.12.r1"
+      side_line:
+        description: "Side branch line"
+        required: true
+        default: "LA.UM.9.12.1.r1"
+      chip_regex:
+        description: "Only count tags matching this (regex)"
+        required: true
+        default: "SMxx50|sm8250"
+      discover:
+        description: "Scan CLO groups to find ALL repos with sm8250 tags (bt, small stuff)"
+        type: boolean
+        default: true
+      with_dates:
+        description: "Also fetch commit date of the newest main tag (slower)"
+        type: boolean
+        default: true
+      extra_repos:
+        description: "Extra repos, one per line: name|url"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MAIN_LINE: ${{ inputs.main_line }}
+      SIDE_LINE: ${{ inputs.side_line }}
+      CHIP_RE: ${{ inputs.chip_regex }}
+      DISCOVER: ${{ inputs.discover }}
+      WITH_DATES: ${{ inputs.with_dates }}
+      EXTRA: ${{ inputs.extra_repos }}
+      API_BASE: https://git.codelinaro.org/api/v4
+      DISCOVER_GROUPS: |
+        clo/la/platform/vendor/opensource
+        clo/la/platform/vendor/qcom-opensource
+      # Core repos. name|url  (display-drivers, data-kernel and wlan paths are guesses: FAILED row = fix here)
+      CORE: |
+        msm-4.19|https://git.codelinaro.org/clo/la/kernel/msm-4.19
+        audio-kernel|https://git.codelinaro.org/clo/la/platform/vendor/opensource/audio-kernel
+        camera-kernel|https://git.codelinaro.org/clo/la/platform/vendor/opensource/camera-kernel
+        video-driver|https://git.codelinaro.org/clo/la/platform/vendor/opensource/video-driver
+        display-drivers|https://git.codelinaro.org/clo/la/platform/vendor/opensource/display-drivers
+        data-kernel|https://git.codelinaro.org/clo/la/platform/vendor/qcom-opensource/data-kernel
+        qcacld-3.0|https://git.codelinaro.org/clo/la/platform/vendor/qcom-opensource/wlan/qcacld-3.0
+        qca-wifi-host-cmn|https://git.codelinaro.org/clo/la/platform/vendor/qcom-opensource/wlan/qca-wifi-host-cmn
+        fw-api|https://git.codelinaro.org/clo/la/platform/vendor/qcom-opensource/wlan/fw-api
+      # Guessed small repo names, tried under both groups (silently skipped if missing)
+      CANDIDATE_BASES: |
+        https://git.codelinaro.org/clo/la/platform/vendor/opensource
+        https://git.codelinaro.org/clo/la/platform/vendor/qcom-opensource
+      CANDIDATE_NAMES: |
+        bt-kernel
+        bluetooth
+        bt
+        securemsm-kernel
+        touch-drivers
+        dataipa
+        datarmnet
+        mm-drivers
+      # What we heard from other kernels (repo|tag). Checked against CLO.
+      CLAIMS: |
+        msm-4.19|LA.UM.9.12.r1-18500-SMxx50.QSSI14.0
+        msm-4.19|LA.UM.9.12.r1-18200-SMxx50.QSSI14.0
+        msm-4.19|LA.UM.9.12.r1-17600.04-SMxx50.QSSI14.0
+        msm-4.19|LA.UM.9.12.r1-17200-SMxx50.QSSI14.0
+        msm-4.19|LA.UM.9.12.r1-15200-SMxx50.QSSI13.0
+        msm-4.19|LA.UM.9.12.c25-03000-SMxx50.QSSI13c28.0
+        camera-kernel|LA.UM.9.12.r1-18500-SMxx50.QSSI14.0
+        camera-kernel|LA.UM.9.12.r1-18200-SMxx50.QSSI14.0
+        camera-kernel|LA.UM.9.12.r1-17900.03-SMxx50.QSSI14.0
+        camera-kernel|LA.UM.9.12.r1-16200-SMxx50.QSSI12.0
+        camera-kernel|LA.UM.9.12.r1-15600-SMxx50.0
+        camera-kernel|LA.UM.9.12.r1-15500-SMxx50.QSSI13.0
+        camera-kernel|LA.UM.9.12.1.r1-11000-SMxx50.QSSI12.0
+        camera-kernel|LA.UM.9.12.1.r1-09700-SMxx50.QSSI12.0
+        fw-api|LA.UM.9.12.r1-18500-SMxx50.QSSI14.0
+        fw-api|LA.UM.9.12.r1-18400-SMxx50.QSSI14.0
+        fw-api|LA.UM.9.12.r1-16100-SMxx50.QSSI14.0
+        qca-wifi-host-cmn|LA.UM.9.12.r1-18500-SMxx50.QSSI14.0
+        qca-wifi-host-cmn|LA.UM.9.12.r1-18400-SMxx50.QSSI14.0
+        qca-wifi-host-cmn|LA.UM.9.12.r1-15300-SMxx50.QSSI12.0
+        qcacld-3.0|LA.UM.9.12.r1-18400-SMxx50.QSSI14.0
+        qcacld-3.0|LA.UM.9.12.r1-15200-SMxx50.QSSI13.0
+        qcacld-3.0|LA.UM.9.12.r1-14700-SMxx50.0
+        audio-kernel|LA.UM.9.12.r1-18400-SMxx50.QSSI14.0
+        audio-kernel|LA.UM.9.12.r1-17200-SMxx50.QSSI14.0
+        video-driver|LA.UM.9.12.r1-18400-SMxx50.QSSI14.0
+        video-driver|LA.UM.9.12.1.r1-09700-SMxx50.QSSI12.0
+        display-drivers|LA.UM.9.12.r1-18400-SMxx50.QSSI14.0
+        display-drivers|LA.UM.9.12.r1-14700-SMxx50.0
+    steps:
+      - name: Research tags
+        run: |
+          python3 - <<'PY'
+          import json, os, re, shutil, subprocess, tempfile, urllib.parse, urllib.request
+          from concurrent.futures import ThreadPoolExecutor
+
+          E = os.environ
+          MAIN, SIDE = E["MAIN_LINE"].strip(), E["SIDE_LINE"].strip()
+          CHIP = re.compile(E["CHIP_RE"])
+          DISCOVER = E.get("DISCOVER", "true") == "true"
+          WITH_DATES = E.get("WITH_DATES", "true") == "true"
+          GIT_ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+          PAT = re.compile(r"^(?P<line>[^-]+)-(?P<build>\d+(?:\.\d+)*)-(?P<tail>.+)$")
+
+
+          def lines(block):
+              return [x.strip() for x in (block or "").splitlines() if x.strip() and not x.strip().startswith("#")]
+
+
+          def pairs(block):
+              out = []
+              for x in lines(block):
+                  if "|" in x:
+                      a, b = x.split("|", 1)
+                      out.append((a.strip(), b.strip()))
+              return out
+
+
+          def sh(cmd, timeout=90):
+              return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=GIT_ENV)
+
+
+          def ls_tags(url):
+              try:
+                  r = sh(["git", "ls-remote", "--tags", "--refs", url])
+              except subprocess.TimeoutExpired:
+                  return None, "timeout"
+              if r.returncode != 0:
+                  ls = r.stderr.strip().splitlines() or ["error"]
+                  msg = next((x for x in ls if x.startswith("fatal:")), ls[0])
+                  return None, msg[:120]
+              tags = [l.split("refs/tags/", 1)[1] for l in r.stdout.splitlines() if "refs/tags/" in l]
+              return tags, ""
+
+
+          def bkey(build):
+              return tuple(int(x) for x in build.split("."))
+
+
+          def analyze(tags):
+              chip = [t for t in tags if CHIP.search(t)]
+              grouped = {}
+              for t in chip:
+                  m = PAT.match(t)
+                  if m:
+                      grouped.setdefault(m["line"], []).append((bkey(m["build"]), t))
+              info = {}
+              for line, items in grouped.items():
+                  items.sort()
+                  info[line] = {"count": len(items), "newest": items[-1][1], "key": items[-1][0]}
+              return {"total": len(tags), "chip": len(chip), "lines": info}
+
+
+          def date_of(url, tag):
+              d = tempfile.mkdtemp()
+              try:
+                  r = sh(["git", "clone", "--quiet", "--depth", "1", "--filter=blob:none",
+                          "--no-checkout", "--branch", tag, url, d], timeout=240)
+                  if r.returncode:
+                      return "?"
+                  return sh(["git", "-C", d, "log", "-1", "--format=%cs"]).stdout.strip() or "?"
+              except Exception:
+                  return "?"
+              finally:
+                  shutil.rmtree(d, ignore_errors=True)
+
+
+          # ---------- gather repos ----------
+          notes = []
+          repos = []  # (name, url, kind)
+          for n, u in pairs(E["CORE"]):
+              repos.append((n, u, "core"))
+          for n, u in pairs(E.get("EXTRA", "")):
+              repos.append((n, u, "core"))
+          for base in lines(E.get("CANDIDATE_BASES", "")):
+              for n in lines(E.get("CANDIDATE_NAMES", "")):
+                  repos.append((base.rsplit("/", 1)[-1] + "/" + n, base + "/" + n, "cand"))
+
+          discovered = 0
+          if DISCOVER:
+              api = E["API_BASE"].rstrip("/")
+              for g in lines(E["DISCOVER_GROUPS"]):
+                  page = 1
+                  while page <= 30:
+                      u = f"{api}/groups/{urllib.parse.quote(g, safe='')}/projects?include_subgroups=true&simple=true&per_page=100&page={page}"
+                      try:
+                          req = urllib.request.Request(u, headers={"User-Agent": "tag-research"})
+                          with urllib.request.urlopen(req, timeout=30) as resp:
+                              data = json.load(resp)
+                      except Exception as ex:
+                          notes.append(f"discovery failed for group {g}: {type(ex).__name__}: {str(ex)[:100]}")
+                          break
+                      if not data:
+                          break
+                      for p in data:
+                          repos.append((p["path_with_namespace"], p["http_url_to_repo"], "disc"))
+                          discovered += 1
+                      if len(data) < 100:
+                          break
+                      page += 1
+              notes.append(f"discovery returned {discovered} projects")
+
+          seen, uniq = set(), []
+          for n, u, k in repos:
+              nu = u.lower().removesuffix(".git").rstrip("/")
+              if nu in seen:
+                  continue
+              seen.add(nu)
+              uniq.append((n, u, k))
+
+
+          def work(item):
+              n, u, k = item
+              tags, err = ls_tags(u)
+              return {"name": n, "url": u, "kind": k, "tags": tags, "err": err}
+
+
+          with ThreadPoolExecutor(max_workers=8) as pool:
+              res = list(pool.map(work, uniq))
+
+          for r in res:
+              r["a"] = analyze(r["tags"]) if r["tags"] is not None else None
+
+          core = [r for r in res if r["kind"] == "core"]
+          cands = [r for r in res if r["kind"] == "cand"]
+          disc = [r for r in res if r["kind"] == "disc"]
+          by_name = {r["name"]: r for r in core}
+
+          if WITH_DATES:
+              def dwork(r):
+                  x = r["a"]["lines"].get(MAIN) if r["a"] else None
+                  r["date"] = date_of(r["url"], x["newest"]) if x else "-"
+              with ThreadPoolExecutor(max_workers=4) as pool:
+                  list(pool.map(dwork, [r for r in core if r["a"]]))
+
+          # ---------- report ----------
+          out = []
+          P = out.append
+          P("# QCOM tag research (sm8250)\n")
+          P(f"Main line `{MAIN}`, side branch `{SIDE}`, chip filter `{E['CHIP_RE']}`.\n")
+
+
+          def cell(a, line):
+              x = a["lines"].get(line) if a else None
+              return f"`{x['newest']}` ({x['count']})" if x else "-"
+
+
+          P("## 1. Core repos\n")
+          P("| repo | sm8250 / all tags | newest main (count) | newest side (count) | other lines | date of newest main |")
+          P("|---|---|---|---|---|---|")
+          for r in core:
+              a = r["a"]
+              if a is None:
+                  P(f"| {r['name']} | FAILED: {r['err']} | | | | |")
+                  continue
+              other = "; ".join(f"{l}: `{v['newest']}` ({v['count']})" for l, v in sorted(a["lines"].items()) if l not in (MAIN, SIDE)) or "-"
+              P(f"| {r['name']} | {a['chip']} / {a['total']} | {cell(a, MAIN)} | {cell(a, SIDE)} | {other} | {r.get('date', '-')} |")
+
+          P("\n## 2. Do our notes hold?\n")
+          P("| repo | tag we heard about | on CLO? |")
+          P("|---|---|---|")
+          claimed = {}
+          for name, tag in pairs(E["CLAIMS"]):
+              r = by_name.get(name)
+              if not r or r["tags"] is None:
+                  status = "repo unreachable"
+              else:
+                  status = "✅ yes" if tag in set(r["tags"]) else "❌ not found"
+              P(f"| {name} | `{tag}` | {status} |")
+              m = PAT.match(tag)
+              if m and m["line"] == MAIN and status.startswith("✅"):
+                  k = bkey(m["build"])
+                  if name not in claimed or k > claimed[name]:
+                      claimed[name] = k
+
+          P("\n## 3. Newer than what we knew (main line)\n")
+          newer = []
+          for name, k in claimed.items():
+              r = by_name.get(name)
+              x = r["a"]["lines"].get(MAIN) if r and r["a"] else None
+              if x and x["key"] > k:
+                  newer.append(f"- **{name}**: `{x['newest']}`")
+          P("\n".join(newer) if newer else "Nothing newer than our notes (or repos unreachable).")
+
+          P("\n## 4. Other repos that carry sm8250 tags (found by discovery / candidate names)\n")
+          extra = [r for r in cands + disc if r["a"] and r["a"]["chip"] > 0]
+          if extra:
+              P("| repo | sm8250 tags | lines (newest) |")
+              P("|---|---|---|")
+              for r in sorted(extra, key=lambda x: x["name"]):
+                  lt = "; ".join(f"{l}: `{v['newest']}` ({v['count']})" for l, v in sorted(r["a"]["lines"].items()))
+                  P(f"| {r['name']} | {r['a']['chip']} | {lt or 'tags without build number'} |")
+          else:
+              P("None found.")
+
+          P("\n## 5. Notes\n")
+          miss = [r["name"] for r in cands if r["tags"] is None]
+          if miss:
+              P(f"- Candidate names not found on CLO: {', '.join(miss)}")
+          bad = [r for r in disc if r["tags"] is None]
+          if bad:
+              P(f"- Discovered repos that could not be read: {len(bad)}")
+          noc = [r["name"] for r in disc if r["a"] and r["a"]["chip"] == 0]
+          if noc:
+              P(f"- Discovered repos checked with no sm8250 tags: {len(noc)}")
+          for n in notes:
+              P(f"- {n}")
+
+          report = "\n".join(out) + "\n"
+          os.makedirs("research-out/tags", exist_ok=True)
+          open("research-out/report.md", "w").write(report)
+          json.dump([{k: v for k, v in r.items() if k != "tags"} | {"tag_count": len(r["tags"] or [])} for r in res],
+                    open("research-out/report.json", "w"), indent=1, default=str)
+          for r in res:
+              if r["tags"] and (r["kind"] == "core" or (r["a"] and r["a"]["chip"] > 0)):
+                  fn = re.sub(r"[^A-Za-z0-9._-]", "_", r["name"])
+                  open(f"research-out/tags/{fn}.txt", "w").write("\n".join(sorted(r["tags"])) + "\n")
+          print(report)
+          with open(E.get("GITHUB_STEP_SUMMARY", os.devnull), "a") as f:
+              f.write(report)
+          PY
+
+      - name: Upload full results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qcom-tag-research
+          path: research-out/
+          if-no-files-found: ignore
